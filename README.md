@@ -1,390 +1,244 @@
+# 学生日报系统
 
-# 学生简易日报系统
+面向学生团队的轻量日报系统。学生使用系统内置账号登录，管理员使用 Supabase Auth；前端和 API 部署在 Netlify，业务数据保存于 Supabase PostgreSQL，每日汇总邮件通过 Resend 发送。
 
-一个基于 Flask + React 的学生简易日报系统，包含学生登录、每日进度填报、用户管理和邮件日报功能。
+生产环境：[student-daily-report-duxy.netlify.app](https://student-daily-report-duxy.netlify.app)
 
-推荐使用方式：
+## 功能
 
-- 项目主体推荐使用 Docker 启动
-- 用户管理端推荐在本地单独启动 `python backend/admin.py`
+### 学生端
 
-这样更适合日常使用：主服务部署更稳定，管理端维护也更直接。
+- 使用用户名和密码登录，Session 有效期 30 天；
+- 管理员创建账号后，学生首次登录必须修改临时密码；
+- 填写今日总结、明日计划和其他说明，不限制字数；
+- 自我评价支持满意、一般、不满意和其他四种状态；
+- GitHub 贡献图风格月度看板，一名学生占一行；
+- 支持前后月份切换、姓名搜索、当天高亮和小屏横向滚动；
+- 学生可以查看所有启用学生的日报和历史记录；
+- 支持查看某位学生指定时间段内的全部工作明细。
 
-## 界面示意
+### 管理端
 
-### 进展看板
+- 管理员通过 Supabase Auth 登录；
+- 创建、编辑、启用或停用学生；
+- 重置学生临时密码、强制修改密码和撤销现有 Session；
+- 管理学生邮箱；
+- 查看每日邮件发送记录并手动补发；
+- 记录管理员敏感操作审计日志。
 
-![进展看板](images/bulletin-board.png)
+### 每日邮件
 
-### 日报填写页
+- Netlify Scheduled Function 每天北京时间 06:00 执行；
+- 汇总前一个业务日所有已提交学生的日报；
+- 每位启用学生都会收到完整汇总，收件人之间互不可见；
+- 使用已验证域名上的 Resend Batch API 发送；
+- 每批最多 100 封，并使用幂等键避免重复发送；
+- 发送结果保存在 `notification_runs`。
 
-![日报填写页](images/report.png)
-
-### 详情信息
-
-![详情信息](images/detail.png)
-
-## 项目结构
+## 架构
 
 ```text
-student-simple-daily-report/
-├── README.md
-├── .gitignore
-├── docker-compose.yml
-├── backend/
-│   ├── app.py                 # 后端主应用
-│   ├── admin.py               # 用户管理页
-│   ├── config.py              # 后端配置
-│   ├── database.py            # 数据库初始化
-│   ├── models.py              # 数据模型
-│   ├── smtp.py                # 日报邮件发送
-│   ├── cron_entry.sh          # Docker 定时任务入口
-│   └── Dockerfile             # 后端镜像
-├── frontend/
-│   ├── package.json
-│   ├── .env.local             # 本地前端环境变量，可自行创建
-│   ├── src/
-│   │   ├── config.js          # 前端接口地址配置
-│   │   ├── services/
-│   │   │   └── api.js         # 前端 API 封装
-│   │   └── components/
-│   │       ├── Login.jsx
-│   │       └── Dashboard.jsx
-│   └── Dockerfile             # 前端镜像
-├── nginx/
-│   └── nginx.conf             # Nginx 反向代理配置
-├── instance/                  # 非仓库自带目录，需运行后或手动创建
-│   ├── progress.db            # SQLite 数据库，运行后生成
-│   └── recipients.csv         # 日报邮件收件人列表，需自行创建
-└── build/                     # 前端打包产物，部署前生成
+浏览器 React SPA
+    │
+    ├── 学生登录、看板、日报、用户管理
+    │       └── /api/v1/* → Netlify Function
+    │                            ├── Supabase PostgreSQL / RPC
+    │                            └── Resend API
+    │
+    └── 管理员登录 → Supabase Auth
+                         │
+                         └── Access Token → Netlify Function 验证
 ```
 
-自检时重点确认这些文件或目录存在：
+业务表不会由浏览器直接读取。`SUPABASE_SERVICE_ROLE_KEY` 和 `RESEND_API_KEY` 仅供 Netlify Functions 使用，不能出现在前端环境变量或 Git 中。
 
-- `backend/app.py`
-- `backend/admin.py`
-- `frontend/package.json`
-- `frontend/src/config.js`
-- `docker-compose.yml`
-- `nginx/nginx.conf`
-- `instance/recipients.csv`（需自行创建，后续会说明填写规则）
+月度看板使用单次 PostgreSQL RPC 聚合查询，并包含两层短缓存：
 
-注意：`instance/` 不是仓库自带目录，需要你在本地运行前手动创建，或由程序首次运行后生成。
+- Netlify Function 实例缓存 30 秒；
+- 浏览器 `sessionStorage` 缓存 60 秒，先显示缓存再后台刷新；
+- 搜索输入有 300ms 防抖；
+- 日报保存后立即清除缓存并重新加载。
 
-## 如何启动
+## 技术栈
 
-### 本地启动
+- React、React Router、Axios
+- TypeScript 服务端模块
+- Netlify Functions 与 Scheduled Functions
+- Supabase PostgreSQL、RPC、Row Level Security
+- Supabase Auth（仅管理员）
+- Resend Email API
+- Zod
+- Node.js 22+
 
-除非特别说明，下面所有命令均在项目根目录执行。
+旧版 Flask、SQLite、Docker 和 Nginx 文件仅作为原项目历史代码保留。新系统不兼容或读取旧平台数据。
 
+## 目录结构
 
-1. 在项目根目录安装后端依赖
+```text
+frontend/              React 前端
+server/src/            API、鉴权、缓存和邮件业务
+server/test/           服务端测试
+netlify/functions/     API 与每日定时任务入口
+supabase/migrations/   Supabase 数据库迁移
+scripts/               本地服务和管理员初始化脚本
+docs/                  需求、架构、API 与部署文档
+```
+
+## 环境变量
+
+复制示例文件：
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install flask flask-sqlalchemy flask-cors werkzeug Jinja2
+cp .env.example .env
+cp frontend/.env.example frontend/.env.local
 ```
 
-2. 在项目根目录配置后端环境变量
+服务端配置：
 
-本机直接运行时，建议先在当前终端执行：
+```dotenv
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=replace-with-service-role-key
+STUDENT_SESSION_COOKIE=student_session
+
+RESEND_API_KEY=re_replace-with-send-only-key
+RESEND_FROM_EMAIL=日报系统 <report@maildr.example.com>
+```
+
+前端配置：
+
+```dotenv
+REACT_APP_API_BASE_URL=/api/v1
+REACT_APP_SUPABASE_URL=https://your-project.supabase.co
+REACT_APP_SUPABASE_ANON_KEY=replace-with-publishable-key
+```
+
+管理员初始化脚本还需要：
+
+```dotenv
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=replace-with-strong-password
+BOOTSTRAP_ADMIN_NAME=系统管理员
+```
+
+`.env` 和 `frontend/.env.local` 已加入 `.gitignore`。不得提交任何真实密钥或密码。
+
+## 本地运行
+
+要求 Node.js 22 或更高版本。
 
 ```bash
-export SECRET_KEY="please-change-this"
-export DB_PATH="instance/progress.db"
-export SMTP_SERVER="smtp.exmail.qq.com"
-export SMTP_PORT="465"
-export EMAIL_ADDRESS="your@example.com"
-export EMAIL_PASSWORD="your-password"
-export RECIPIENTS_CSV="instance/recipients.csv"
-export FLASK_APP="backend/app.py"
-```
-
-特别说明，SMTP_SERVER、SMTP_PORT、EMAIL_ADDRESS、EMAIL_PASSWORD 需要配置对应的SMTP服务器、端口、邮箱地址、邮箱密码。这里仅以腾讯企业邮箱为例。
-
-`RECIPIENTS_CSV` 用来指定日报邮件收件人列表文件路径，通常填写为 `instance/recipients.csv`。
-
-如果你暂时不用邮件日报，`EMAIL_ADDRESS`、`EMAIL_PASSWORD`、`RECIPIENTS_CSV` 可以先不配。
-
-3. 在项目根目录启动后端
-
-```bash
-mkdir -p instance
-python -m flask run --host=0.0.0.0 --port=5000
-```
-
-后端默认使用 `instance/progress.db`，首次启动会自动建表。
-
-4. 在 `frontend/` 目录配置本地前端接口地址
-
-本地开发时，前端和后端通常是分开启动的：
-
-- 前端开发服务器：`http://127.0.0.1:3000`
-- 后端接口服务：`http://127.0.0.1:5000`
-
-因此，`REACT_APP_API_BASE_URL` 需要明确指向后端接口地址。
-
-这里默认写成：
-
-```env
-REACT_APP_API_BASE_URL=http://127.0.0.1:5000/api
-```
-
-原因：
-
-- `127.0.0.1` 表示“当前这台机器本机”
-- `5000` 是本项目本地运行 Flask 的默认端口
-- `/api` 是后端接口统一前缀
-
-也就是说，这个配置适用于“前后端都跑在你自己的这台电脑上，本地浏览器直接访问”的场景。
-
-常见情况可以这样改：
-
-1. 本机本地开发
-
-前端和后端都在同一台电脑上运行，保持默认即可：
-
-```env
-REACT_APP_API_BASE_URL=http://127.0.0.1:5000/api
-```
-
-2. 本机本地开发，但你想用 `localhost`
-
-也可以改成：
-
-```env
-REACT_APP_API_BASE_URL=http://localhost:5000/api
-```
-
-当前项目后端已配置为 `CORS` 全允许，所以这里通常不需要再单独改白名单；如果后续改回按域名限制，再同步放行对应前端地址即可。
-
-3. 局域网内从另一台设备访问
-
-如果前端页面是从手机、平板或另一台电脑访问你的开发机，那么 `127.0.0.1` 就不能用了，因为它只代表“访问者自己的机器”。
-
-这时应改成你开发机的局域网 IP，例如：
-
-```env
-REACT_APP_API_BASE_URL=http://192.168.1.10:5000/api
-```
-
-同时需要满足：
-
-- 后端已用 `--host=0.0.0.0` 启动
-- 防火墙已放行对应端口
-- 如果你后续把 `CORS` 改回按域名限制，需要把前端实际访问地址加入允许列表，例如 `http://192.168.1.10:3000`
-
-4. Docker + Nginx 统一反向代理
-
-如果你是通过 `docker compose` 启动，并由 Nginx 统一转发接口，那么前端通常不需要写死后端主机和端口，直接走同源代理即可：
-
-```env
-REACT_APP_API_BASE_URL=/api
-```
-
-本项目前端默认配置本身就支持这种写法；如果不额外设置，生产部署通常也建议保持 `/api`。
-
-5. 线上部署到正式域名
-
-如果前端和后端通过同一个域名访问，也建议写成：
-
-```env
-REACT_APP_API_BASE_URL=/api
-```
-
-如果前后端分属不同域名，再改成完整地址，例如：
-
-```env
-REACT_APP_API_BASE_URL=https://your-domain.com/api
-```
-
-总结：
-
-- 本机直跑：`http://127.0.0.1:5000/api`
-- 局域网调试：`http://你的局域网IP:5000/api`
-- Docker / Nginx / 同域部署：`/api`
-- 独立线上接口域名：`https://你的域名/api`
-
-5. 在 `frontend/` 目录启动前端
-
-```bash
-cd frontend
 npm install
-npm start
-```
-
-默认访问地址：
-
-- 前端：`http://127.0.0.1:3000`
-- 后端：`http://127.0.0.1:5000`
-
-## 如何添加用户
-
-### 方式一：使用管理端
-
-管理端支持新增用户、删除用户、修改密码。
-
-在项目根目录执行：
-
-```bash
-export SECRET_KEY="please-change-this"
-export DB_PATH="instance/progress.db"
-python backend/admin.py
-```
-
-访问：
-
-- `http://127.0.0.1:5001/admin`
-
-填写以下信息即可创建用户：
-
-- `username`：登录用户名，必须唯一
-- `name`：显示姓名
-- `password`：初始密码
-
-这里不需要填写 `email`。系统用户信息和日报邮件收件人列表是分开的。
-
-### 方式二：初始化测试数据
-
-在项目根目录执行：
-
-```bash
-export FLASK_APP="backend/app.py"
-export DB_PATH="instance/progress.db"
-python -m flask init-db
-```
-
-该命令会清空现有数据，并创建 3 个测试用户：
-
-- `zhangsan / 123456`
-- `lisi / 123456`
-- `wangwu / 123456`
-
-只建议在本地演示或首次空库测试时使用，不要在已有数据环境执行。
-
-## recipients.csv 说明
-
-`instance/recipients.csv` 用于配置“谁会收到每日邮件报告”。它只给日报邮件使用，不参与登录，也不会自动创建系统用户。
-
-推荐格式：
-
-```csv
-email,name
-alice@example.com,张三
-bob@example.com,李四
-```
-
-字段说明：
-
-- `email`：收件人邮箱地址，日报邮件会发送到这里
-- `name`：收件人姓名或备注，方便维护；当前程序不会在发送时使用这一列
-
-填写规则：
-
-- 第一行建议保留表头 `email,name`
-- 一行一个收件人
-- `email` 必填
-- `name` 选填，可以写中文名，也可以写备注
-- 如果有重复邮箱，程序会自动去重
-
-如果你只想维护邮箱，也可以写成单列：
-
-```csv
-alice@example.com
-bob@example.com
-```
-
-本机运行时，通常配合下面这条环境变量一起使用：
-
-```bash
-export RECIPIENTS_CSV="instance/recipients.csv"
-```
-
-## 注意事项
-
-- `init-db` 会执行删库重建，请勿在生产环境或已有数据环境使用。
-- 管理端目前没有登录保护，不要直接暴露到公网。
-- 默认数据库路径是 `instance/progress.db`，公开仓库时不要提交数据库文件。
-- 本机直接运行后端或管理端时，请先在项目根目录所在终端用 `export XXX=...` 配好环境变量。
-- Docker 运行时，请在项目根目录写 `.env`，不要把本机 `export` 和 Docker `.env` 混用。
-- `SECRET_KEY`、邮箱账号、邮箱密码等敏感配置请通过环境变量或 `.env` 管理，不要提交到 GitHub。
-- 当前后端 `CORS` 为全部允许，便于本地开发、局域网调试和临时联调；如果用于正式公网环境，建议按实际域名收紧。
-- 系统按 `Asia/Shanghai` 时区，并以凌晨 `3:00` 作为一天的分界点。
-- 删除用户时会同时删除该用户的进度数据。
-
-## Docker 使用
-
-### 1. 准备环境变量
-
-在项目根目录创建 `.env`，至少包含以下内容：
-
-```env
-SECRET_KEY=please-change-this
-DB_PATH=instance/progress.db
-SMTP_SERVER=smtp.exmail.qq.com  #邮箱服务器，注意这里是以腾讯企业邮箱为例，其他邮箱需要配置对应的SMTP服务器
-SMTP_PORT=465
-EMAIL_ADDRESS=your@example.com  #邮箱地址
-EMAIL_PASSWORD=your-password  #邮箱密码
-REPORT_TIME=06:00
-TIMEZONE=Asia/Shanghai
-RECIPIENTS_CSV=/app/instance/recipients.csv
-```
-
-如果暂时不需要日报邮件，请不要启动 `daily_report` 服务，或先补齐邮件相关配置。
-
-其中：
-
-- `EMAIL_ADDRESS`：发件邮箱
-- `EMAIL_PASSWORD`：发件邮箱密码或授权码
-- `RECIPIENTS_CSV`：容器内收件人列表文件路径，对应宿主机里的 `instance/recipients.csv`
-
-### 2. 准备前端静态文件
-
-当前 `docker-compose.yml` 直接挂载项目根目录的 `build/` 目录。
-
-先在项目根目录执行：
-
-```bash
-cd frontend
-npm install
+npm --prefix frontend ci
+npm run typecheck
+npm run test:server
 npm run build
-rm -rf ../build
-cp -r build ../build
+npm run dev:local
 ```
 
-### 3. 启动容器
+启动后访问：
 
-回到项目根目录执行：
+```text
+http://127.0.0.1:8888
+```
+
+`dev:local` 会同时提供前端静态文件和 `/api/v1/*` 本地 API。修改前端后需要重新执行 `npm run build`。
+
+也可以安装 Netlify CLI 后使用：
 
 ```bash
-docker compose up -d --build
+npx netlify dev
 ```
 
-默认访问地址：
+## 数据库初始化
 
-- 页面入口：`http://127.0.0.1:14080`
+在 Supabase SQL Editor 中按文件名顺序执行：
 
-### 4. Docker 环境中添加用户
+```text
+supabase/migrations/202607230001_initial_schema.sql
+supabase/migrations/202607230002_monthly_board_function.sql
+supabase/migrations/202607230003_notification_run_lock.sql
+supabase/migrations/202607230004_student_email.sql
+```
 
-可以临时拉起管理端容器：
-
-在项目根目录执行：
+初始化首个管理员：
 
 ```bash
-docker compose run --rm -p 5001:5001 backend python backend/admin.py
+npm run bootstrap:admin
 ```
 
-然后访问：
+完成后应从环境中移除 `BOOTSTRAP_ADMIN_PASSWORD`。
 
-- `http://127.0.0.1:5001/admin`
-
-该管理端会复用当前挂载的 `./instance` 数据目录。
-
-### 5. 停止服务
-
-在项目根目录执行：
+## 测试
 
 ```bash
-docker compose down
+npm run typecheck
+npm run test:server
+npm run build
 ```
+
+服务端测试覆盖：
+
+- OpenAPI 与路由一致性；
+- 请求参数校验；
+- 密码和 Session 安全；
+- 上海时区业务日期；
+- 数据库 RLS 和索引；
+- 月度看板单次集合查询；
+- 看板缓存与写入后失效；
+- 每日邮件并发保护。
+
+## Netlify 部署
+
+`netlify.toml` 已配置：
+
+- Node.js 22；
+- 构建命令：`npm run build`；
+- 发布目录：`frontend/build`；
+- Functions 目录：`netlify/functions`；
+- `/api/*` 到统一 API Function 的重写；
+- SPA 路由回退到 `/index.html`。
+
+部署前需要在 Netlify 配置以下变量：
+
+```text
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+STUDENT_SESSION_COOKIE
+RESEND_API_KEY
+RESEND_FROM_EMAIL
+REACT_APP_API_BASE_URL
+REACT_APP_SUPABASE_URL
+REACT_APP_SUPABASE_ANON_KEY
+```
+
+生产部署：
+
+```bash
+npx netlify deploy --build --prod
+```
+
+部署后至少验证：
+
+- `/` 学生登录页返回 200；
+- `/admin/login` 管理员登录页返回 200；
+- 未登录访问 `/api/v1/student/session` 返回 401；
+- 学生登录、填写日报和月度看板正常；
+- Netlify Functions 中存在 `api` 和 `scheduled-daily-report`；
+- Resend 中能看到 UTF-8 编码正常的测试邮件。
+
+## 常用页面
+
+- 学生登录：`/`
+- 学生看板：`/dashboard`
+- 修改密码：`/change-password`
+- 学生历史：`/people/:studentId/reports`
+- 管理员登录：`/admin/login`
+- 管理员控制台：`/admin/users`
+
+## 文档
+
+- [需求分析文档](docs/需求分析文档.md)
+- [系统架构设计](docs/系统架构设计.md)
+- [API 接口文档](docs/API接口文档.md)
+- [OpenAPI 定义](docs/openapi.yaml)
+- [部署与初始化指南](docs/部署与初始化指南.md)
